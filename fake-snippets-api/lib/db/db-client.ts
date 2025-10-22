@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { z } from "zod"
 import { hoist } from "zustand-hoist"
 import { createStore } from "zustand/vanilla"
@@ -12,6 +13,10 @@ import {
   type Order,
   type OrderFile,
   OrderQuote,
+  type BugReport,
+  bugReportSchema,
+  type BugReportFile,
+  bugReportFileSchema,
   type Package,
   type PackageFile,
   type PackageRelease,
@@ -176,6 +181,90 @@ const initializer = combine(databaseSchema.parse({}), (set, get) => ({
   getOrderFileById: (orderFileId: string): OrderFile | undefined => {
     const state = get()
     return state.orderFiles.find((file) => file.order_file_id === orderFileId)
+  },
+  addBugReport: ({
+    reporter_account_id,
+    text,
+    is_auto_deleted,
+    delete_at,
+  }: {
+    reporter_account_id: string
+    text?: string | null
+    is_auto_deleted?: boolean
+    delete_at?: string | null
+  }): BugReport => {
+    const normalizedIsAutoDeleted = Boolean(is_auto_deleted)
+    if (normalizedIsAutoDeleted && !delete_at) {
+      throw new Error("delete_at is required when is_auto_deleted is true")
+    }
+    const normalizedDeleteAt = normalizedIsAutoDeleted
+      ? (delete_at ?? null)
+      : null
+
+    const bugReport = bugReportSchema.parse({
+      bug_report_id: randomUUID(),
+      reporter_account_id,
+      text: text ?? null,
+      is_auto_deleted: normalizedIsAutoDeleted,
+      delete_at: normalizedDeleteAt,
+      created_at: new Date().toISOString(),
+      file_count: 0,
+    })
+
+    set((state) => ({
+      bugReports: [...state.bugReports, bugReport],
+    }))
+
+    return bugReport
+  },
+  getBugReportById: (bugReportId: string): BugReport | undefined => {
+    const state = get()
+    return state.bugReports.find(
+      (bugReport) => bugReport.bug_report_id === bugReportId,
+    )
+  },
+  addBugReportFile: ({
+    bug_report_id,
+    file_path,
+    content_mimetype,
+    is_text,
+    content_text,
+    content_bytes,
+  }: {
+    bug_report_id: string
+    file_path: string
+    content_mimetype: string
+    is_text: boolean
+    content_text: string | null
+    content_bytes: Uint8Array | null
+  }): BugReportFile => {
+    const bugReportFile = bugReportFileSchema.parse({
+      bug_report_file_id: randomUUID(),
+      bug_report_id,
+      file_path,
+      content_mimetype,
+      is_text,
+      created_at: new Date().toISOString(),
+      content_text,
+      content_bytes,
+    })
+
+    set((state) => ({
+      bugReportFiles: [...state.bugReportFiles, bugReportFile],
+      bugReports: state.bugReports.map((bugReport) =>
+        bugReport.bug_report_id === bug_report_id
+          ? { ...bugReport, file_count: bugReport.file_count + 1 }
+          : bugReport,
+      ),
+    }))
+
+    return bugReportFile
+  },
+  getBugReportFilesByBugReportId: (bugReportId: string): BugReportFile[] => {
+    const state = get()
+    return state.bugReportFiles.filter(
+      (file) => file.bug_report_id === bugReportId,
+    )
   },
   addAccount: (
     account: Omit<Account, "account_id" | "is_tscircuit_staff"> &
@@ -1164,6 +1253,20 @@ const initializer = combine(databaseSchema.parse({}), (set, get) => ({
     }))
     return newSession
   },
+  deleteSession: (sessionId: string): boolean => {
+    let deleted = false
+    set((state) => {
+      const index = state.sessions.findIndex(
+        (session) => session.session_id === sessionId,
+      )
+      if (index !== -1) {
+        state.sessions.splice(index, 1)
+        deleted = true
+      }
+      return state
+    })
+    return deleted
+  },
   addStar: (accountId: string, packageId: string): AccountPackage => {
     const now = new Date().toISOString()
     const accountPackage = {
@@ -1348,10 +1451,11 @@ const initializer = combine(databaseSchema.parse({}), (set, get) => ({
     packageFile: Omit<PackageFile, "package_file_id">,
   ): PackageFile => {
     const newPackageFile = {
-      package_file_id: `package_file_${Date.now()}`,
+      package_file_id: `package_file_${get().idCounter + 1}`,
       ...packageFile,
     }
     set((state) => ({
+      idCounter: state.idCounter + 1,
       packageFiles: [...state.packageFiles, newPackageFile],
     }))
     return newPackageFile
